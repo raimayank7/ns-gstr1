@@ -97,7 +97,9 @@
     var inP = mine.filter(function (d) { return d.date >= P.from && d.date <= P.to; });
     var byNo = {}; mine.forEach(function (d) { if ((d.type === 'invoice' || d.type === 'cashmemo') && d.no) byNo[key(d.no)] = d; });
     var r = { P: P, b2b: [], b2cl: [], exp: [], b2cs: {}, exemp: [0, 1, 2, 3].map(function () { return [0, 0, 0]; }), cdnr: [], cdnur: [], at: {}, hsnb2b: {}, hsnb2c: {}, docs: {}, warn: [], n: 0,
-      tot: { txv: 0, igst: 0, cgst: 0, sgst: 0 }, seller: null, skipped: 0 };
+      tot: { txv: 0, igst: 0, cgst: 0, sgst: 0 }, seller: null, skipped: 0, J: { b2b: [], b2cl: [], exp: [], cdnr: [], cdnur: [] } };
+    /* one record per bill or note for the portal JSON (gstr1json.js) */
+    function J(s, d, o, x) { r.J[s].push(Object.assign({ no: d.no, date: d.date, val: o.value, pos: o.pos, rc: !!d.rc, rates: Object.keys(o.rates).map(function (g) { return o.rates[g]; }) }, x)); }
     var W = function (k, v) { r.warn.push(t('g1.w.' + k, v)); };
     function tot(o, sign) { r.tot.txv += sign * o.txv; r.tot.igst += sign * o.igst; r.tot.cgst += sign * o.cgst; r.tot.sgst += sign * o.sgst; }
     function hsn(bucket, d, o, sign) {
@@ -130,13 +132,16 @@
         if (c === 'b2b') {
           var st = SUPTYPE[d.einv && d.einv.sup] || 'Regular B2B';
           rates.forEach(function (b) { r.b2b.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), o.value, posTxt(o.pos), rc, '', st, '', b.g, r2(b.txv), '', b]); });
+          J('b2b', d, o, { ctin: d.buyer.gstin.toUpperCase().trim(), sup: d.einv && d.einv.sup });
           hsn(r.hsnb2b, d, o, 1);
         } else if (c === 'b2cl') {
           rates.forEach(function (b) { r.b2cl.push([d.no, gdate(d.date), o.value, posTxt(o.pos), '', b.g, r2(b.txv), '', '', b]); });
+          J('b2cl', d, o);
           hsn(r.hsnb2c, d, o, 1);
         } else if (c === 'exp') {
-          var et = exportOf(d);
-          rates.forEach(function (b) { r.exp.push([et, d.no, gdate(d.date), o.value, '', '', '', b.g, r2(b.txv), '', b]); });
+          var et = exportOf(d), ex = d.exp || {};
+          rates.forEach(function (b) { r.exp.push([et, d.no, gdate(d.date), o.value, ex.port || '', ex.sbNo || '', gdate(ex.sbDate), b.g, r2(b.txv), '', b]); });
+          J('exp', d, o, { etype: et, port: String(ex.port || '').toUpperCase(), sbno: /^\d{1,7}$/.test(ex.sbNo || '') ? +ex.sbNo : '', sbdate: ex.sbDate || '' });
           W('exp', { no: d.no });
           hsn(r.hsnb2c, d, o, 1);
         } else {
@@ -158,12 +163,14 @@
         if (gstinOk(d.buyer && d.buyer.gstin)) {
           var nst = SUPTYPE[orig && orig.einv && orig.einv.sup] || 'Regular B2B';
           nrates.forEach(function (b) { r.cdnr.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), nt, posTxt(pos), d.rc ? 'Y' : 'N', nst, on.value, '', b.g, r2(b.txv), '', b]); });
+          J('cdnr', d, on, { ctin: d.buyer.gstin.toUpperCase().trim(), pos: pos, ntty: nt, sup: orig && orig.einv && orig.einv.sup });
           hsn(r.hsnb2b, d, on, sign);
         } else {
           var oc = orig ? cls(orig) : '';
           if (oc === 'b2cl' || oc === 'exp') {
             var ur = oc === 'b2cl' ? 'B2CL' : exportOf(orig) === 'WPAY' ? 'EXPWP' : 'EXPWOP';
             nrates.forEach(function (b) { r.cdnur.push([ur, d.no, gdate(d.date), nt, oc === 'b2cl' ? posTxt(pos) : '', on.value, '', b.g, r2(b.txv), '', b]); });
+            J('cdnur', d, on, { ur: ur, pos: pos, ntty: nt });
           } else {   /* small B2C bills: the note changes the B2CS figures (a credit note lowers them) */
             nrates.forEach(function (b) {
               var s = addTo(r.b2cs, pos + '|' + b.g, { pos: pos, g: b.g }); s.txv += sign * b.txv; s.igst += sign * b.igst; s.cgst += sign * b.cgst; s.sgst += sign * b.sgst;
@@ -256,6 +263,38 @@
     }).catch(function () { NS.toast(t('g1.xfail'), 'bad'); });
   }
 
+  /* GSTR-1 JSON for the portal's Prepare Offline › Upload: checked first, problems listed in plain words */
+  function ownGstin() {
+    var s = R.seller || {}, bz = $('#g1-biz').value, b = BIZ.filter(function (x) { return key(x.name) === bz && x.gstin; })[0];
+    return String(s.gstin || b && b.gstin || '').trim().toUpperCase();
+  }
+  function json() {
+    var box = $('#g1-jerr'), g = ownGstin(), E = NSG1J.validate(R, g, $('#g1-aato').value);
+    if (E.length) {
+      box.hidden = false;
+      box.innerHTML = '<b>' + esc(t('g1.j.fix', { n: E.length })) + '</b><ul>' + E.slice(0, 40).map(function (e) { return '<li>' + esc(t('g1.j.' + e[0], e[1])) + '</li>'; }).join('') + '</ul>' +
+        (E.length > 40 ? '<p>' + esc(t('g1.more', { n: E.length - 40 })) + '</p>' : '');
+      box.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    box.hidden = true;
+    var out = NSG1J.build(R, g);
+    save(new Blob([JSON.stringify(out)], { type: 'application/json' }), 'GSTR1_' + g + '_' + out.fp + '.json');
+    NS.toast(t('g1.j.done'));
+  }
+  function jsonButton() {
+    var row = $('#g1-files .row');
+    if (!row || $('[data-do="json"]', row)) return;
+    var b = NS.el('button', { type: 'button', 'class': 'btn primary', 'data-do': 'json', 'data-ic': 'down' });
+    b.textContent = t('g1.j.btn'); b.setAttribute('data-i18n', 'g1.j.btn');
+    row.insertBefore(b, row.firstChild);
+    var x = $('[data-do="xlsx"]', row); if (x) x.classList.remove('primary');
+    var h = NS.el('p', { 'class': 'soft g1-jh', 'data-i18n': 'g1.j.h' }); h.textContent = t('g1.j.h');
+    row.parentNode.insertBefore(h, row.nextSibling);
+    var e = NS.el('div', { id: 'g1-jerr', 'class': 'callout g1-warn', role: 'alert' }); e.hidden = true;
+    h.parentNode.insertBefore(e, h.nextSibling);
+  }
+
   /* ---------- screen ---------- */
   function m(n) { return money(n, false); }
   function sumOf(list, f) { return r2(list.reduce(function (a, x) { return a + f(x); }, 0)); }
@@ -296,6 +335,7 @@
     });
     h += table('docs', [t('g1.c.nat'), t('g1.c.from'), t('g1.c.to'), t('g1.c.tot'), t('g1.c.can')], r.docs.map(function (x) { return [x.nature, x.from, x.to, String(x.total), String(x.cancel)]; }), null);
     out.innerHTML = h;
+    var je = $('#g1-jerr'); if (je) je.hidden = true;
     $('#g1-files').hidden = false;
     try { localStorage.setItem('ns-g1', JSON.stringify({ biz: $('#g1-biz').value, p: $('#g1-ptype').value, m: $('#g1-month').value, a: $('#g1-aato').value })); } catch (e) {}
   }
@@ -324,12 +364,14 @@
     }).catch(function () { st.textContent = t('g1.fail'); });
   }
   function start() {
+    jsonButton();
     load();
     document.addEventListener('ns-lang', function () { if (R) draw(); });   /* the language pack can arrive after the first drawing */
     root.addEventListener('change', function (e) { if (e.target.closest('.g1-ctl')) draw(); });
     root.addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b || !R) return;
       if (b.dataset.csv) csv(b.dataset.csv);
+      else if (b.dataset.do === 'json') json();
       else if (b.dataset.do === 'xlsx') excel();
       else if (b.dataset.do === 'allcsv') SEC.forEach(function (s, i) { if (rows(s, R).length) setTimeout(function () { csv(s); }, i * 400); });
       else if (b.dataset.do === 'print') window.print();
