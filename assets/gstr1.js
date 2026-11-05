@@ -52,7 +52,8 @@
   function calc(d) {
     var origin = d.seller && d.seller.state, pos = d.pos || d.buyer && d.buyer.state || origin, tax = taxOn(d);
     var intra = !origin || !pos || origin === pos, o = { pos: pos, intra: intra, lines: [], rates: {}, taxable: 0, tax: 0 };
-    (d.items || []).forEach(function (it) {
+    /* extra charges on the bill (freight, packing...) are part of the taxable value: counted as lines at their GST rate */
+    (d.items || []).concat(window.NSBooks && NSBooks.chargeLines ? NSBooks.chargeLines(d) : []).forEach(function (it) {
       var q = num(it.qty), rate = num(it.rate);
       if (!it.desc && !rate) return;
       var gross = q * rate, txv = r2(gross - gross * num(it.disc) / 100), g = tax ? num(it.gst) : 0, tx = r2(txv * g / 100);
