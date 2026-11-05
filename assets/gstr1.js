@@ -324,6 +324,7 @@
   }
   function start() {
     load();
+    document.addEventListener('ns-lang', function () { if (R) draw(); });   /* the language pack can arrive after the first drawing */
     root.addEventListener('change', function (e) { if (e.target.closest('.g1-ctl')) draw(); });
     root.addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b || !R) return;
