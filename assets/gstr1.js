@@ -129,6 +129,7 @@
         if (d.buyer && d.buyer.gstin && !reg) W('badgstin', { no: d.no, g: d.buyer.gstin });
         var c = cls(d), rc = d.rc ? 'Y' : 'N', rates = Object.keys(o.rates).map(function (g) { return o.rates[g]; });
         rates.forEach(function (b) { tot(b, 1); });
+        if (d.date >= '2026-02-01' && rates.some(function (b) { return +b.g === 28; })) W('r28', { no: d.no });   /* 28% left the GST rate list on 1 Feb 2026 (same rule as docs.js RATE_SETS) */
         if (c === 'b2b') {
           var st = SUPTYPE[d.einv && d.einv.sup] || 'Regular B2B';
           rates.forEach(function (b) { r.b2b.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), o.value, posTxt(o.pos), rc, '', st, '', b.g, r2(b.txv), '', b]); });
