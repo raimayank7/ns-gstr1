@@ -116,6 +116,7 @@
     function docRow(nature, d) { var x = r.docs[nature + '|' + series(d.no)] || (r.docs[nature + '|' + series(d.no)] = { nature: nature, list: [] }); x.list.push(d.no || ''); }
     inP.forEach(function (d) {
       var ty = d.type || 'invoice';
+      if (ty === 'note' && d.side === 'purchase') return;   /* notes against purchases are not outward supplies */
       if (!r.seller && d.seller) r.seller = d.seller;
       if (ty === 'invoice' || ty === 'cashmemo') {
         docRow('Invoices for outward supply', d);
