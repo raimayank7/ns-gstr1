@@ -3,7 +3,7 @@
    Field names follow the JSON the GST Returns Offline Tool writes and the GSTN GSTR-1 save API: gstin, fp (MMYYYY; a quarter = its last
    month), b2b[ctin, inv[inum, idt DD-MM-YYYY, val, pos, rchrg, inv_typ, itms[num, itm_det]]], b2cl[pos, inv], b2cs[sply_ty, pos, typ, rt, txval...],
    exp[exp_typ, inv], cdnr[ctin, nt[ntty, nt_num, nt_dt...]], cdnur[typ B2CL|EXPWP|EXPWOP...], nil{inv[sply_ty INTRB2B|INTRAB2B|INTRB2C|INTRAB2C]},
-   at[pos, sply_ty, itms[rt, ad_amt...]], hsn{hsn_b2b, hsn_b2c} (Table 12 split from the May 2025 period), doc_issue{doc_det[doc_num, docs]}.
+   at[pos, sply_ty, itms[rt, ad_amt...]], txpd (11B, same shape), hsn{hsn_b2b, hsn_b2c} (Table 12 split from the May 2025 period), doc_issue{doc_det[doc_num, docs]}.
    GSTN publishes no official schema file: names were checked against a schema rebuilt from portal tests (gist the-solipsist/d60d4ec9, 2026)
    and the offline tool's own output; doc_num codes and cdnur typ values are from the GSTN API list and still need one real upload to confirm.
    validate() returns problems as [key, values] for NS.t('g1.j.' + key). */
@@ -76,6 +76,10 @@
     if (r.exemp.some(function (x) { return x[0] || x[1] || x[2]; }))
       out.nil = { inv: r.exemp.map(function (x, i) { return { sply_ty: NILTY[i], nil_amt: r2(x[0]), expt_amt: r2(x[1]), ngsup_amt: r2(x[2]) }; }) };
     if (r.at.length) out.at = grp(r.at.map(function (x) { return Object.assign({ k: code(x.pos) }, x); }), 'k', function (x) {
+      var intra = code(x.pos) === home, g = { pos: code(x.pos), sply_ty: intra ? 'INTRA' : 'INTER', itms: [] };
+      g._push = function (y) { g.itms.push({ rt: y.g, ad_amt: r2(y.txv), iamt: r2(y.igst), camt: r2(y.cgst), samt: r2(y.sgst), csamt: 0 }); }; return g; });
+    /* table 11B: advances adjusted (round C) */
+    if (r.atadj && r.atadj.length) out.txpd = grp(r.atadj.map(function (x) { return Object.assign({ k: code(x.pos) }, x); }), 'k', function (x) {
       var intra = code(x.pos) === home, g = { pos: code(x.pos), sply_ty: intra ? 'INTRA' : 'INTER', itms: [] };
       g._push = function (y) { g.itms.push({ rt: y.g, ad_amt: r2(y.txv), iamt: r2(y.igst), camt: r2(y.cgst), samt: r2(y.sgst), csamt: 0 }); }; return g; });
     function hsnList(list) {

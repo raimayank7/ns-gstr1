@@ -22,7 +22,7 @@
   /* B2C Large: inter-state bill to an unregistered buyer above Rs 1 lakh from the August 2024 period (Notification 12/2024-CT), Rs 2.5 lakh before */
   function b2clLimit(date) { return String(date) >= '2024-08-01' ? 100000 : 250000; }
   var SUPTYPE = { B2B: 'Regular B2B', SEZWP: 'SEZ supplies with payment', SEZWOP: 'SEZ supplies without payment', DEXP: 'Deemed Exp' };
-  var SEC = ['b2b', 'b2cl', 'exp', 'b2cs', 'exemp', 'cdnr', 'cdnur', 'at', 'hsnb2b', 'hsnb2c', 'docs'];
+  var SEC = ['b2b', 'b2cl', 'exp', 'b2cs', 'exemp', 'cdnr', 'cdnur', 'at', 'atadj', 'hsnb2b', 'hsnb2c', 'docs'];
   /* section: offline tool sheet name, table no. in GSTR-1, CSV headers (the tool's own files) and Excel headers (the template's order) */
   var LAYOUT = {
     b2b: ['b2b,sez,de', '4A, 4B, 6B, 6C', ['GSTIN/UIN of Recipient', 'Receiver Name', 'Invoice Number', 'Invoice date', 'Invoice Value', 'Place Of Supply', 'Reverse Charge', 'Applicable % of Tax Rate', 'Invoice Type', 'E-Commerce GSTIN', 'Rate', 'Taxable Value', 'Cess Amount']],
@@ -33,6 +33,7 @@
     cdnr: ['cdnr', '9B', ['GSTIN/UIN of Recipient', 'Receiver Name', 'Note Number', 'Note Date', 'Note Type', 'Place Of Supply', 'Reverse Charge', 'Note Supply Type', 'Note Value', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount']],
     cdnur: ['cdnur', '9B', ['UR Type', 'Note Number', 'Note Date', 'Note Type', 'Place Of Supply', 'Note Value', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount']],
     at: ['at', '11A', ['Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Gross Advance Received', 'Cess Amount']],
+    atadj: ['atadj', '11B', ['Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Gross Advance Adjusted', 'Cess Amount']],
     hsnb2b: ['hsn(b2b)', '12', ['HSN', 'Description', 'UQC', 'Total Quantity', 'Total Value', 'Taxable Value', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount', 'Rate'],
       ['HSN', 'Description', 'UQC', 'Total Quantity', 'Total Value', 'Rate', 'Taxable Value', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount']],
     hsnb2c: ['hsn(b2c)', '12', ['HSN', 'Description', 'UQC', 'Total Quantity', 'Total Value', 'Taxable Value', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount', 'Rate'],
@@ -96,7 +97,7 @@
     var mine = DOCS.filter(function (d) { return key(d.seller && d.seller.name) === bz; });
     var inP = mine.filter(function (d) { return d.date >= P.from && d.date <= P.to; });
     var byNo = {}; mine.forEach(function (d) { if ((d.type === 'invoice' || d.type === 'cashmemo') && d.no) byNo[key(d.no)] = d; });
-    var r = { P: P, b2b: [], b2cl: [], exp: [], b2cs: {}, exemp: [0, 1, 2, 3].map(function () { return [0, 0, 0]; }), cdnr: [], cdnur: [], at: {}, hsnb2b: {}, hsnb2c: {}, docs: {}, warn: [], n: 0,
+    var r = { P: P, b2b: [], b2cl: [], exp: [], b2cs: {}, exemp: [0, 1, 2, 3].map(function () { return [0, 0, 0]; }), cdnr: [], cdnur: [], at: {}, atadj: {}, hsnb2b: {}, hsnb2c: {}, docs: {}, warn: [], n: 0,
       tot: { txv: 0, igst: 0, cgst: 0, sgst: 0 }, seller: null, skipped: 0, J: { b2b: [], b2cl: [], exp: [], cdnr: [], cdnur: [] } };
     /* one record per bill or note for the portal JSON (gstr1json.js) */
     function J(s, d, o, x) { r.J[s].push(Object.assign({ no: d.no, date: d.date, val: o.value, pos: o.pos, rc: !!d.rc, rates: Object.keys(o.rates).map(function (g) { return o.rates[g]; }) }, x)); }
@@ -183,9 +184,8 @@
       } else if (ty === 'self') docRow('Invoices for inward supply from unregistered person', d);
       else if (ty === 'receipt' && d.kind === 'adv' && d.gstAdv) {
         docRow('Receipt Voucher', d);
-        var g = num(d.rate), amt = num(d.amount), apos = d.pos || d.seller && d.seller.state, base = r2(amt * 100 / (100 + g)), intra = !apos || apos === (d.seller && d.seller.state), tx = r2(amt - base);
-        var a = addTo(r.at, apos + '|' + g, { pos: apos, g: g }); a.txv += base; a.igst += intra ? 0 : tx; a.cgst += intra ? tx / 2 : 0; a.sgst += intra ? tx / 2 : 0;
-        W('adv', { no: d.no });
+        var x = window.NSBooks && NSBooks.advTax && NSBooks.advTax(d);   /* same split as the books and the receipt voucher; a bounced cheque has none */
+        if (x) { var a = addTo(r.at, x.pos + '|' + x.rate, { pos: x.pos, g: x.rate }); a.txv += x.taxable; a.igst += x.igst; a.cgst += x.cgst; a.sgst += x.sgst; W('adv', { no: d.no }); }
       } else if (ty === 'receipt' && d.kind === 'ref') docRow('Refund Voucher', d);
       else if (ty === 'voucher' && d.rcm) docRow('Payment Voucher', d);
       else if (ty === 'challan') {
@@ -193,9 +193,14 @@
         if (nat) docRow(nat, d);
       }
     });
+    /* table 11B: advances of earlier or this period used by a bill (or refunded) in this period: same matching as the books (round C) */
+    if (window.NSBooks && NSBooks.advAdjust) NSBooks.advAdjust(mine, bz).forEach(function (x) {
+      if (!(x.date >= P.from && x.date <= P.to)) return;
+      var a = addTo(r.atadj, x.pos + '|' + x.rate, { pos: x.pos, g: x.rate }); a.txv += x.taxable; a.igst += x.igst; a.cgst += x.cgst; a.sgst += x.sgst;
+    });
     if (r.skipped) W('plain', { n: r.skipped });
-    ['b2cs', 'at', 'hsnb2b', 'hsnb2c'].forEach(function (s) { r[s] = Object.keys(r[s]).map(function (k) { return r[s][k]; }); });
-    r.b2cs.forEach(function (s) { tot0(s); }); r.at.forEach(function (s) { tot0(s); });
+    ['b2cs', 'at', 'atadj', 'hsnb2b', 'hsnb2c'].forEach(function (s) { r[s] = Object.keys(r[s]).map(function (k) { return r[s][k]; }); });
+    r.b2cs.forEach(function (s) { tot0(s); }); r.at.forEach(function (s) { tot0(s); }); r.atadj.forEach(function (s) { tot0(s); });
     function tot0(s) { s.txv = r2(s.txv); s.igst = r2(s.igst); s.cgst = r2(s.cgst); s.sgst = r2(s.sgst); }
     r.hsnb2b.forEach(tot0); r.hsnb2c.forEach(tot0);
     r.docs = Object.keys(r.docs).map(function (k) { return docSum(r.docs[k], W); });
@@ -228,6 +233,7 @@
       case 'cdnr': return r.cdnr.map(cut);
       case 'cdnur': return r.cdnur.map(cut);
       case 'at': return r.at.map(function (x) { return [posTxt(x.pos), '', x.g, x.txv, '']; });
+      case 'atadj': return r.atadj.map(function (x) { return [posTxt(x.pos), '', x.g, x.txv, '']; });
       case 'hsnb2b': case 'hsnb2c': return r[s].map(function (h) {
         var tv = r2(h.txv + h.igst + h.cgst + h.sgst), q = h.svc ? '' : r2(h.qty);
         return excel ? [h.hsn, h.desc, h.uqc, q, tv, h.g, h.txv, h.igst, h.cgst, h.sgst, ''] : [h.hsn, h.desc, h.uqc, q, tv, h.txv, h.igst, h.cgst, h.sgst, '', h.g];
@@ -332,6 +338,7 @@
     h += table('cdnr', ['GSTIN', t('g1.c.name')].concat(nh), r.cdnr.map(function (x) { return [x[0], x[1], x[2], x[3], x[4] === 'C' ? t('g1.cn') : t('g1.dn'), x[8], x[10] + '%'].concat(taxCols(last(x))); }), null);
     h += table('cdnur', [t('g1.c.urt')].concat(nh), r.cdnur.map(function (x) { return [x[0], x[1], x[2], x[3] === 'C' ? t('g1.cn') : t('g1.dn'), x[5], x[7] + '%'].concat(taxCols(last(x))); }), null);
     h += table('at', [t('g1.c.pos'), t('g1.c.rate')].concat(TH()), r.at.map(function (x) { return [posTxt(x.pos), x.g + '%'].concat(taxCols(x)); }), feet(r.at, function (x) { return x; }));
+    h += table('atadj', [t('g1.c.pos'), t('g1.c.rate')].concat(TH()), r.atadj.map(function (x) { return [posTxt(x.pos), x.g + '%'].concat(taxCols(x)); }), feet(r.atadj, function (x) { return x; }));
     ['hsnb2b', 'hsnb2c'].forEach(function (k) {
       h += table(k, ['HSN', t('g1.c.desc'), 'UQC', t('g1.c.qty'), t('g1.c.rate')].concat(TH()), r[k].map(function (x) { return [x.hsn || '—', x.desc, x.uqc, x.svc ? '' : NS.qty(x.qty), x.g + '%'].concat(taxCols(x)); }), feet(r[k], function (x) { return x; }));
     });
