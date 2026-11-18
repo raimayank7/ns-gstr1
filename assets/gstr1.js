@@ -357,7 +357,7 @@
   function load() {
     var st = $('#g1-status');
     NSStore.ready().then(function () { return Promise.all([NSStore.list('doc'), NSStore.list('biz')]); }).then(function (x) {
-      DOCS = x[0] || []; BIZ = x[1] || [];
+      DOCS = (x[0] || []).map(function (d) { return window.NSBooks && NSBooks.asInvoice ? NSBooks.asInvoice(d) : d; });   /* export invoices (F3-10) */ BIZ = x[1] || [];
       var bl = bizList(), sel = $('#g1-biz');
       sel.innerHTML = bl.length ? bl.map(function (b) { return '<option value="' + esc(b[0]) + '">' + esc(b[1]) + '</option>'; }).join('') : '<option value="">' + esc(t('g1.nobiz')) + '</option>';
       var saved = {}; try { saved = JSON.parse(localStorage.getItem('ns-g1') || '{}'); } catch (e) {}
