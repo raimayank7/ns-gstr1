@@ -74,6 +74,10 @@
     if (/^EXP/.test(sup) || (d.buyer && d.buyer.state) === '96' || d.pos === '96') return sup === 'EXPWOP' ? 'WOPAY' : sup === 'EXPWP' ? 'WPAY' : (calc(d).tax > 0 ? 'WPAY' : 'WOPAY');
     return '';
   }
+  /* supply type of a B2B bill: the e-invoice choice, else an SEZ buyer (party registration type, r1-gst S-2) = SEZ with / without payment */
+  function supOf(d) { var s = d && d.einv && d.einv.sup || ''; if (s && s !== 'B2B') return s; return d && d.buyer && d.buyer.reg === 'sez' ? (calc(d).tax > 0 ? 'SEZWP' : 'SEZWOP') : s; }
+  /* 0% value of a bill by taxability (r1-gst S-1: line tk nil / exempt / non-GST), as GSTR-1 table 8 columns [nil, exempt, non-GST] */
+  function z8(d, dflt) { var z = window.NSGst ? NSGst.zeroSplit(d, dflt) : null; return z ? [z.nil, z.exempt, z.nongst] : null; }
   /* what kind of outward bill it is in GSTR-1 */
   function cls(d) {
     var o = calc(d);
@@ -114,16 +118,22 @@
         else if (bucket === r.hsnb2b && l.hsn.length < 4) W('hsn4', { no: d.no, h: l.hsn });
       });
     }
-    function docRow(nature, d) { var x = r.docs[nature + '|' + series(d.no)] || (r.docs[nature + '|' + series(d.no)] = { nature: nature, list: [] }); x.list.push(d.no || ''); }
+    function docRow(nature, d, cx) { var x = r.docs[nature + '|' + series(d.no)] || (r.docs[nature + '|' + series(d.no)] = { nature: nature, list: [], cx: 0 }); x.list.push(d.no || ''); if (cx) x.cx++; }
     inP.forEach(function (d) {
       var ty = d.type || 'invoice';
+      if (d.cancelled) {   /* ERP Round 1, A-3: a cancelled voucher is counted in table 13 as cancelled and nowhere else */
+        var cn = ty === 'invoice' || ty === 'cashmemo' ? 'Invoices for outward supply' : ty === 'note' && d.side !== 'purchase' ? (d.kind === 'debit' ? 'Debit Note' : 'Credit Note') : ty === 'self' ? 'Invoices for inward supply from unregistered person' :
+          ty === 'receipt' && d.kind === 'adv' && d.gstAdv ? 'Receipt Voucher' : ty === 'receipt' && d.kind === 'ref' ? 'Refund Voucher' : ty === 'voucher' && d.rcm ? 'Payment Voucher' : '';
+        if (cn) docRow(cn, d, 1);
+        return;
+      }
       if (ty === 'note' && d.side === 'purchase') return;   /* notes against purchases are not outward supplies */
       if (!r.seller && d.seller) r.seller = d.seller;
       if (ty === 'invoice' || ty === 'cashmemo') {
         docRow('Invoices for outward supply', d);
         var o = calc(d), reg = gstinOk(d.buyer && d.buyer.gstin), place = (o.intra ? 1 : 0) + (reg ? 0 : 2);
         if (!taxOn(d)) {
-          if (d.kind === 'supply') { r.exemp[place][1] += o.taxable; r.n++; } else r.skipped++;
+          if (d.kind === 'supply') { var zs = z8(d, 'exempt'); if (zs && r2(zs[0] + zs[1] + zs[2]) === r2(o.taxable)) zs.forEach(function (v, c) { r.exemp[place][c] += v; }); else r.exemp[place][1] += o.taxable; r.n++; } else r.skipped++;
           return;
         }
         r.n++;
@@ -131,11 +141,12 @@
         if (d.buyer && d.buyer.gstin && !reg) W('badgstin', { no: d.no, g: d.buyer.gstin });
         var c = cls(d), rc = d.rc ? 'Y' : 'N', rates = Object.keys(o.rates).map(function (g) { return o.rates[g]; });
         rates.forEach(function (b) { tot(b, 1); });
-        if (d.date >= '2026-02-01' && rates.some(function (b) { return +b.g === 28; })) W('r28', { no: d.no });   /* 28% left the GST rate list on 1 Feb 2026 (same rule as docs.js RATE_SETS) */
+        if (d.date >= '2026-02-01' && rates.some(function (b) { return +b.g === 28; })) W('r28', { no: d.no });
+        if (d.date >= '2025-09-22' && (d.items || []).some(function (it) { return +it.gst === 12 && !/^99/.test(String(it.hsn || '').trim()); })) W('r12', { no: d.no });   /* goods left 12% on 22 Sep 2025 (F3-4) */   /* 28% left the GST rate list on 1 Feb 2026 (same rule as docs.js RATE_SETS) */
         if (c === 'b2b') {
-          var st = SUPTYPE[d.einv && d.einv.sup] || 'Regular B2B';
+          var st = SUPTYPE[supOf(d)] || 'Regular B2B';
           rates.forEach(function (b) { r.b2b.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), o.value, posTxt(o.pos), rc, '', st, '', b.g, r2(b.txv), '', b]); });
-          J('b2b', d, o, { ctin: d.buyer.gstin.toUpperCase().trim(), sup: d.einv && d.einv.sup });
+          J('b2b', d, o, { ctin: d.buyer.gstin.toUpperCase().trim(), sup: supOf(d) });
           hsn(r.hsnb2b, d, o, 1);
         } else if (c === 'b2cl') {
           rates.forEach(function (b) { r.b2cl.push([d.no, gdate(d.date), o.value, posTxt(o.pos), '', b.g, r2(b.txv), '', '', b]); });
@@ -145,11 +156,11 @@
           var et = exportOf(d), ex = d.exp || {};
           rates.forEach(function (b) { r.exp.push([et, d.no, gdate(d.date), o.value, ex.port || '', ex.sbNo || '', gdate(ex.sbDate), b.g, r2(b.txv), '', b]); });
           J('exp', d, o, { etype: et, port: String(ex.port || '').toUpperCase(), sbno: /^\d{1,7}$/.test(ex.sbNo || '') ? +ex.sbNo : '', sbdate: ex.sbDate || '' });
-          W('exp', { no: d.no });
+          if (!ex.port || !ex.sbNo || !ex.sbDate) W('exp', { no: d.no });   /* only when the port code, shipping bill no. or date is missing (F3-2) */
           hsn(r.hsnb2c, d, o, 1);
         } else {
           rates.forEach(function (b) {
-            if (!b.g) { r.exemp[place][0] += b.txv; return; }
+            if (!b.g) { var zb = z8(d, 'nil'); if (zb && r2(zb[0] + zb[1] + zb[2]) === r2(b.txv)) zb.forEach(function (v, c) { r.exemp[place][c] += v; }); else r.exemp[place][0] += b.txv; return; }
             var s = addTo(r.b2cs, o.pos + '|' + b.g, { pos: o.pos, g: b.g }); s.txv += b.txv; s.igst += b.igst; s.cgst += b.cgst; s.sgst += b.sgst;
           });
           hsn(r.hsnb2c, d, o, 1);
@@ -163,8 +174,9 @@
         var pos = orig ? calc(orig).pos : on.pos, nrates = Object.keys(on.rates).map(function (g) { return on.rates[g]; });
         nrates.forEach(function (b) { tot(b, sign); });
         if (!orig) W('noorig', { no: d.no, o: d.orig && d.orig.no || '—' });
+        else if (orig.date && d.date && d.date < orig.date) W('nbefore', { no: d.no, o: orig.no });   /* a note cannot come before its bill (F3-3) */
         if (gstinOk(d.buyer && d.buyer.gstin)) {
-          var nst = SUPTYPE[orig && orig.einv && orig.einv.sup] || 'Regular B2B';
+          var nst = SUPTYPE[orig && supOf(orig)] || 'Regular B2B';
           nrates.forEach(function (b) { r.cdnr.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), nt, posTxt(pos), d.rc ? 'Y' : 'N', nst, on.value, '', b.g, r2(b.txv), '', b]); });
           J('cdnr', d, on, { ctin: d.buyer.gstin.toUpperCase().trim(), pos: pos, ntty: nt, sup: orig && orig.einv && orig.einv.sup });
           hsn(r.hsnb2b, d, on, sign);
@@ -218,7 +230,7 @@
     if (dup) W('dup', { s: series(l[0]) || l[0] });
     if (isFinite(lo) && isFinite(hi) && hi - lo + 1 > l.length) W('gap', { s: series(l[0]), n: hi - lo + 1 - l.length });
     var total = isFinite(lo) && isFinite(hi) ? Math.max(hi - lo + 1, l.length) : l.length;
-    return { nature: x.nature, from: l[0], to: l[l.length - 1], total: total, cancel: total - l.length };
+    return { nature: x.nature, from: l[0], to: l[l.length - 1], total: total, cancel: total - l.length + (x.cx || 0) };   /* gaps + vouchers marked cancelled (A-3) */
   }
 
   /* ---------- rows for the files ---------- */
