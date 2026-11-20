@@ -356,11 +356,54 @@
     });
     h += table('docs', [t('g1.c.nat'), t('g1.c.from'), t('g1.c.to'), t('g1.c.tot'), t('g1.c.can')], r.docs.map(function (x) { return [x.nature, x.from, x.to, String(x.total), String(x.cancel)]; }), null);
     out.innerHTML = h;
+    var off = $('#g1-off'); if (off) off.innerHTML = official(r);
     var je = $('#g1-jerr'); if (je) je.hidden = true;
     $('#g1-files').hidden = false;
     try { localStorage.setItem('ns-g1', JSON.stringify({ biz: $('#g1-biz').value, p: $('#g1-ptype').value, m: $('#g1-month').value, a: $('#g1-aato').value })); } catch (e) {}
   }
 
+  /* the return as Form GSTR-1 lays it out (rule 59(1) of the CGST Rules): tables 4 to 13 under their own numbers */
+  function official(r) {
+    var G = NS.gstForm; if (!G) return '';
+    var s = r.seller || {}, P = r.P || {}, T5 = function (b) { return [r2(b.txv), r2(b.igst), r2(b.cgst), r2(b.sgst), r2(b.cess || 0)]; }, R = function (a) { return { cells: a }; };
+    var TX = ['Taxable value', 'Integrated Tax', 'Central Tax', 'State/UT Tax', 'Cess'];
+    var sum = function (L, f) { var o = { txv: 0, igst: 0, cgst: 0, sgst: 0, cess: 0 }; L.forEach(function (x) { var b = f(x); Object.keys(o).forEach(function (k) { o[k] = r2(o[k] + (+b[k] || 0)); }); }); return o; };
+    var tot = function (L, f, lead) { var b = sum(L, f); return { cells: lead.concat(T5(b)), tot: 1 }; };
+    var y = P.from ? +P.from.slice(0, 4) : 0, mo = P.from ? +P.from.slice(5, 7) : 4, fy = mo >= 4 ? y + '-' + String(y + 1).slice(2) : (y - 1) + '-' + String(y).slice(2);
+    var h = G.head('FORM GSTR-1', '[See rule 59(1)]', 'Details of outward supplies of goods or services', [['Year', fy], ['Period', P.label || '']], [
+      ['1.', 'GSTIN', s.gstin || ''], ['2(a).', 'Legal name of the registered person', (s.gst && s.gst.legal) || s.legal || s.name || ''], ['2(b).', 'Trade name, if any', s.name || ''],
+      ['2(c).', 'ARN', ''], ['2(d).', 'Date of ARN', ''], ['3.', 'Aggregate turnover in the preceding Financial Year', ($('#g1-aato') && $('#g1-aato').selectedOptions[0] ? $('#g1-aato').selectedOptions[0].textContent : '')]]);
+    h += G.table('4.', 'Taxable outward supplies made to registered persons (including UIN-holders) other than supplies covered by Table 6 (4A; 4B reverse charge; 4C through e-commerce operator)',
+      ['GSTIN/UIN', 'Invoice No.', 'Invoice date', 'Invoice value', 'Place of supply', 'Rate'].concat(TX), r.b2b.map(function (x) { return R([x[0], x[2], x[3], x[4], x[5], x[10] + '%'].concat(T5(last(x)))); }).concat(r.b2b.length ? [tot(r.b2b, last, ['Total', '', '', '', '', ''])] : []));
+    h += G.table('5.', 'Taxable outward inter-State supplies to un-registered persons where the invoice value is more than Rs 1 lakh',
+      ['Invoice No.', 'Invoice date', 'Invoice value', 'Place of supply', 'Rate'].concat(TX), r.b2cl.map(function (x) { return R([x[0], x[1], x[2], x[3], x[5] + '%'].concat(T5(last(x)))); }));
+    h += G.table('6.', 'Zero rated supplies and deemed exports (6A exports; 6B supplies to SEZ unit/developer and 6C deemed exports are in Table 4)',
+      ['Type', 'Invoice No.', 'Invoice date', 'Invoice value', 'Rate'].concat(TX), r.exp.map(function (x) { return R([x[0], x[1], x[2], x[3], x[7] + '%'].concat(T5(last(x)))); }));
+    h += G.table('7.', 'Taxable supplies (net of debit / credit notes) to un-registered persons other than the supplies covered in Table 5',
+      ['Place of supply', 'Rate'].concat(TX), r.b2cs.map(function (x) { return R([posTxt(x.pos), x.g + '%'].concat(T5(x))); }).concat(r.b2cs.length ? [tot(r.b2cs, function (x) { return x; }, ['Total', ''])] : []));
+    h += G.table('8.', 'Nil rated, exempted and non-GST outward supplies', ['Description', 'Nil Rated Supplies', 'Exempted (other than nil rated/non-GST supply)', 'Non-GST supplies'],
+      rows('exemp', r).map(function (x) { return R(x); }));
+    h += G.table('9B.', 'Credit / Debit Notes (Registered)', ['GSTIN', 'Note No.', 'Note date', 'Type', 'Note value', 'Rate'].concat(TX),
+      r.cdnr.map(function (x) { return R([x[0], x[2], x[3], x[4] === 'C' ? 'Credit note' : 'Debit note', x[8], x[10] + '%'].concat(T5(last(x)))); }));
+    h += G.table('9B.', 'Credit / Debit Notes (Unregistered)', ['Type of recipient', 'Note No.', 'Note date', 'Type', 'Note value', 'Rate'].concat(TX),
+      r.cdnur.map(function (x) { return R([x[0], x[1], x[2], x[3] === 'C' ? 'Credit note' : 'Debit note', x[5], x[7] + '%'].concat(T5(last(x)))); }));
+    h += G.table('11A.', 'Advances received for which invoice has not been issued (tax to be added to output tax liability)', ['Place of supply', 'Rate'].concat(TX),
+      r.at.map(function (x) { return R([posTxt(x.pos), x.g + '%'].concat(T5(x))); }));
+    h += G.table('11B.', 'Advance amount received in earlier tax period and adjusted against the supplies being shown in this tax period', ['Place of supply', 'Rate'].concat(TX),
+      r.atadj.map(function (x) { return R([posTxt(x.pos), x.g + '%'].concat(T5(x))); }));
+    [['hsnb2b', 'HSN-wise summary of outward supplies: B2B (to registered persons)'], ['hsnb2c', 'HSN-wise summary of outward supplies: B2C (to unregistered persons)']].forEach(function (k) {
+      h += G.table('12.', k[1], ['HSN', 'Description', 'UQC', 'Total quantity', 'Rate'].concat(TX), r[k[0]].map(function (x) { return R([x.hsn || '—', x.desc, x.uqc, x.svc ? '' : NS.qty(x.qty), x.g + '%'].concat(T5(x))); }));
+    });
+    h += G.table('13.', 'Documents issued during the tax period', ['Nature of document', 'Sr. No. From', 'Sr. No. To', 'Total number', 'Cancelled', 'Net issued'],
+      r.docs.map(function (x) { return R([x.nature, x.from, x.to, String(x.total), String(x.cancel), String(x.total - x.cancel)]); }));
+    h += G.verify() + G.note('Prepared in NSBiz from your saved bills. Upload with the JSON file (Returns › GSTR-1 › Prepare Offline › Upload) or type it on the GST portal, and check the portal summary before you file.');
+    return G.wrap(h);
+  }
+  (function offBox() {
+    var tool = $('#g1'), anchor = tool && ($('#g1-out', tool) || null); if (!anchor || $('#g1-off')) return;
+    var box = anchor.closest('.g1-files') ? anchor.parentNode : anchor, d = document.createElement('section'); d.id = 'g1-off'; d.className = 'off-box'; d.setAttribute('aria-label', 'Form GSTR-1');
+    if (NS.gstForm && NS.gstForm.inApp) { anchor.parentNode.insertBefore(d, anchor); NS.gstForm.fold(anchor, 'See every table as the working'); } else anchor.parentNode.insertBefore(d, anchor.nextSibling);
+  })();
   function bizList() {
     var seen = {}, out = [];
     BIZ.concat(DOCS.map(function (d) { return d.seller; })).forEach(function (s) { var k = key(s && s.name); if (k && !seen[k]) { seen[k] = 1; out.push([k, s.name + (s.gstin ? ' (' + s.gstin + ')' : '')]); } });
@@ -396,7 +439,7 @@
       else if (b.dataset.do === 'xlsx') excel();
       else if (b.dataset.do === 'allcsv') SEC.forEach(function (s, i) { if (rows(s, R).length) setTimeout(function () { csv(s); }, i * 400); });
       else if (b.dataset.do === 'print') window.print();
-      else if (b.dataset.do === 'share') NS.sharePdf([$('#g1-out')], fname(''), 'a4', 'GSTR-1 ' + R.P.label, 'GSTR-1 summary ' + R.P.label);
+      else if (b.dataset.do === 'share') NS.sharePdf([NS.gstForm && NS.gstForm.inApp && $('#g1-off .off-sheet') || $('#g1-out')], fname(''), 'a4', 'GSTR-1 ' + R.P.label, 'GSTR-1 summary ' + R.P.label);
       else if (b.dataset.do === 'refresh') load();
     });
   }
