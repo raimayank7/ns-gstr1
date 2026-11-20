@@ -283,6 +283,41 @@
     }).catch(function () { NS.toast(t('g1.xfail'), 'bad'); });
   }
 
+  /* the department's "GSTR1 Excel Workbook Template" (inside the Returns Offline Tool download): NSBiz writes every table into a COPY
+     of it, from row 5 of each sheet as the template asks; the example rows are cleared, dates become Excel dates, places of supply
+     are spelled as the template's own list. The copy is imported in the Offline Tool (Import Files › Import Excel). */
+  function fillTemplate(book) {
+    var need = SEC.map(function (s) { return LAYOUT[s][0]; }).filter(function (n) { return book.sheets.indexOf(n) < 0; });
+    if (need.length) throw new Error(need.indexOf('hsn(b2b)') >= 0 && book.sheets.indexOf('hsn') >= 0 ? 'oldtpl' : 'notg1');
+    var X = NS.xlFill;
+    return book.sheet('master').then(function (M) { return M.listUnder('POS'); }, function () { return []; }).then(function (POS) {
+      return SEC.reduce(function (p, s) {
+        return p.then(function () { return book.sheet(LAYOUT[s][0]); }).then(function (S) {
+          var hd = LAYOUT[s][3] || LAYOUT[s][2];
+          var data = rows(s, R, true).map(function (r) { return r.map(function (v, j) { var h = hd[j] || ''; return /date/i.test(h) ? X.serial(v) : /Place Of Supply/i.test(h) ? X.posFrom(POS, v) : v; }); });
+          S.putRows(5, data);
+        });
+      }, Promise.resolve());
+    });
+  }
+  function showTpl() { var e = $('[data-tpl="gstr1"]'); if (e && NS.xlFill) NS.xlFill.info('gstr1').then(function (k) { e.textContent = k ? ' Using ' + k.name : ''; }); }
+  function fillTpl(own) {
+    if (!R || !NS.xlFill) return;
+    var g = ownGstin();
+    var tp = null;
+    NS.xlFill.template('gstr1', own).then(function (x) {
+      tp = x; if (!tp) return; var f = tp.file;
+      NS.toast('Filling ' + f.name + '…');
+      return NS.xlFill.open(f).then(function (book) { return fillTemplate(book).then(function () { NS.xlFill.good('gstr1', tp);
+        var nm = 'GSTR1_' + (g || 'GSTIN') + '_' + R.P.label.replace(/[^A-Za-z0-9]+/g, '-') + ' NSBiz.xlsx';
+        return book.save(nm).then(function (bl) { return NS.xlFill.toFolder(g, R.P.label.replace(/[^A-Za-z0-9]+/g, '-'), nm, bl); }).then(function (inF) { NS.toast('Saved as "' + nm + '".' + (inF ? ' Also saved in NSBiz › GST Returns.' : '') + ' In the Returns Offline Tool: Import Files › Import Excel, then View Summary.'); showTpl(); });
+      }); });
+    }).catch(function (e) {
+      var w = e && e.message; if (/^(oldtpl|notg1|notxl)$/.test(w)) NS.xlFill.bad('gstr1', tp);
+      NS.toast(w === 'notzip' ? 'Choose the zip downloaded from gst.gov.in, or the Excel template inside it.' : w === 'notinzip' ? 'That zip does not hold the GSTR-1 Excel template. Download the Returns Offline Tool from gst.gov.in › Downloads › Offline Tools.' : w === 'oldtpl' ? 'That is an older template (one HSN sheet). Use GSTR1_Excel_Workbook_Template V2.2 from the latest Returns Offline Tool.' : w === 'notg1' || w === 'notxl' ? 'That file is not the GSTR-1 Excel Workbook Template (it comes inside the Returns Offline Tool from gst.gov.in › Downloads › Offline Tools).' : 'Could not fill the template: ' + (w || e));
+    });
+  }
+
   /* GSTR-1 JSON for the portal's Prepare Offline › Upload: checked first, problems listed in plain words */
   function ownGstin() {
     var s = R.seller || {}, bz = $('#g1-biz').value, b = BIZ.filter(function (x) { return key(x.name) === bz && x.gstin; })[0];
@@ -309,6 +344,8 @@
     b.textContent = t('g1.j.btn'); b.setAttribute('data-i18n', 'g1.j.btn');
     row.insertBefore(b, row.firstChild);
     var x = $('[data-do="xlsx"]', row); if (x) x.classList.remove('primary');
+    var tp = NS.el('button', { type: 'button', 'class': 'btn', 'data-do': 'tpl', 'data-ic': 'xls', title: 'Fills the official GSTR-1 Excel template of the Returns Offline Tool (gst.gov.in) with these tables and saves it as a new file' }); tp.textContent = 'Fill the GSTR-1 template (Excel)'; row.insertBefore(tp, b.nextSibling);
+    tp.insertAdjacentHTML('afterend', '<button type="button" class="btn sm" data-do="tplown" data-noic title="Choose a newer Returns Offline Tool download from gst.gov.in">Change template file</button><span class="soft xl-tpl" data-tpl="gstr1"></span>'); showTpl();
     var h = NS.el('p', { 'class': 'soft g1-jh', 'data-i18n': 'g1.j.h' }); h.textContent = t('g1.j.h');
     row.parentNode.insertBefore(h, row.nextSibling);
     var e = NS.el('div', { id: 'g1-jerr', 'class': 'callout g1-warn', role: 'alert' }); e.hidden = true;
@@ -437,6 +474,8 @@
       if (b.dataset.csv) csv(b.dataset.csv);
       else if (b.dataset.do === 'json') json();
       else if (b.dataset.do === 'xlsx') excel();
+      else if (b.dataset.do === 'tpl') fillTpl(false);
+      else if (b.dataset.do === 'tplown') fillTpl(true);
       else if (b.dataset.do === 'allcsv') SEC.forEach(function (s, i) { if (rows(s, R).length) setTimeout(function () { csv(s); }, i * 400); });
       else if (b.dataset.do === 'print') window.print();
       else if (b.dataset.do === 'share') NS.sharePdf([NS.gstForm && NS.gstForm.inApp && $('#g1-off .off-sheet') || $('#g1-out')], fname(''), 'a4', 'GSTR-1 ' + R.P.label, 'GSTR-1 summary ' + R.P.label);
