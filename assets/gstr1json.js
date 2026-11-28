@@ -41,7 +41,7 @@
   function fp(P) { var p = String(P.to).split('-'); return p[1] + p[0]; }
 
   function itm(b, i, flat) {
-    var d = { txval: r2(b.txv), rt: b.g, iamt: r2(b.igst), camt: r2(b.cgst), samt: r2(b.sgst), csamt: 0 };
+    var d = { txval: r2(b.txv), rt: b.g, iamt: r2(b.igst), camt: r2(b.cgst), samt: r2(b.sgst), csamt: r2(b.cess || 0) };
     if (flat) { delete d.camt; delete d.samt; return d; }
     return { num: i + 1, itm_det: d };
   }
@@ -64,7 +64,7 @@
     if (b2cs.length) out.b2cs = b2cs.map(function (x) {
       var intra = code(x.pos) === home, o = { sply_ty: intra ? 'INTRA' : 'INTER', pos: code(x.pos), typ: 'OE', txval: r2(x.txv), rt: x.g };
       if (intra) { o.camt = r2(x.cgst); o.samt = r2(x.sgst); } else o.iamt = r2(x.igst);
-      o.csamt = 0; return o;
+      o.csamt = r2(x.cess || 0); return o;
     });
     if (J.cdnr.length) out.cdnr = grp(J.cdnr, 'ctin', function (x) { var g = { ctin: x.ctin, nt: [] }; g._push = function (y) {
       g.nt.push({ ntty: y.ntty, nt_num: y.no, nt_dt: dmy(y.date), val: r2(y.val), pos: code(y.pos), rchrg: y.rc ? 'Y' : 'N', inv_typ: INVTYP[y.sup] || 'R', itms: itmsOf(y.rates) }); }; return g; });
@@ -86,7 +86,7 @@
       return list.map(function (h, i) {
         var u = h.svc ? 'NA' : String(h.uqc || 'OTH').split('-')[0];
         return { num: i + 1, hsn_sc: h.hsn, desc: String(h.desc || h.hsn).slice(0, 30), uqc: u, qty: h.svc ? 0 : r2(h.qty), rt: h.g,
-          txval: r2(h.txv), iamt: r2(h.igst), camt: r2(h.cgst), samt: r2(h.sgst), csamt: 0 };
+          txval: r2(h.txv), iamt: r2(h.igst), camt: r2(h.cgst), samt: r2(h.sgst), csamt: r2(h.cess || 0) };
       });
     }
     out.hsn = { hsn_b2b: hsnList(r.hsnb2b) };

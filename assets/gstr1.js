@@ -15,6 +15,13 @@
   function posTxt(c) { return c ? c + '-' + (POSN[c] || NS.stateName(c)) : ''; }
   var UQC = { nos: 'NOS-NUMBERS', pcs: 'PCS-PIECES', kg: 'KGS-KILOGRAMS', gm: 'GMS-GRAMMES', ltr: 'LTR-LITRES', ml: 'MLT-MILILITRE', mtr: 'MTR-METERS', 'sq ft': 'SQF-SQUARE FEET',
     box: 'BOX-BOX', pack: 'PAC-PACKS', set: 'SET-SETS', pair: 'PRS-PAIRS', dozen: 'DOZ-DOZENS', bag: 'BAG-BAGS', ton: 'TON-TONNES', bottle: 'BTL-BOTTLES', roll: 'ROL-ROLLS', 'sq m': 'SQM-SQUARE METERS', quintal: 'QTL-QUINTAL', unit: 'UNT-UNITS' };
+  /* the unit as typed in a bill or a file (Kgs, KGS, Nos., PCS-PIECES, Mtrs) -> the portal's UQC; unknown units are OTH */
+  var UQCV = Object.keys(UQC).map(function (k) { return UQC[k]; });
+  function uqcOf(u) {
+    var k = key(u).replace(/\.$/, ''), c = UQC[k] || UQC[k.replace(/e?s$/, '')]; if (c) return c;
+    var up = k.toUpperCase().split(/[-\s]/)[0]; c = UQCV.filter(function (v) { return v.split('-')[0] === up; })[0];
+    return c || ({ KG: 'KGS-KILOGRAMS', MTRS: 'MTR-METERS', LTRS: 'LTR-LITRES', NO: 'NOS-NUMBERS', PC: 'PCS-PIECES', PIECE: 'PCS-PIECES', PIECES: 'PCS-PIECES', QTLS: 'QTL-QUINTAL', TONS: 'TON-TONNES', MT: 'TON-TONNES', SQFT: 'SQF-SQUARE FEET', BOXES: 'BOX-BOX', BTLS: 'BTL-BOTTLES', ROLLS: 'ROL-ROLLS', UNITS: 'UNT-UNITS', PKT: 'PAC-PACKS', PACKET: 'PAC-PACKS', DOZ: 'DOZ-DOZENS' })[up] || 'OTH-OTHERS';
+  }
   var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function gdate(iso) { var p = String(iso || '').split('-'); return p.length === 3 ? p[2] + '-' + MON[+p[1] - 1] + '-' + p[0] : ''; }
   function key(s) { return String(s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
@@ -42,7 +49,7 @@
   };
   var EXEMP = ['Inter-State supplies to registered persons', 'Intra-State supplies to registered persons', 'Inter-State supplies to unregistered persons', 'Intra-State supplies to unregistered persons'];
 
-  var DOCS = [], BIZ = [], R = null;
+  var DOCS = [], BIZ = [], R = null, FILE = null;   /* FILE: bills read from a dropped sales register (g1drop.js), else the saved bills */
 
   /* ---------- one bill: lines by rate, place of supply, value ---------- */
   function taxOn(d) {
@@ -52,9 +59,19 @@
   }
   function calc(d) {
     var origin = d.seller && d.seller.state, pos = d.pos || d.buyer && d.buyer.state || origin, tax = taxOn(d);
-    var intra = !origin || !pos || origin === pos, o = { pos: pos, intra: intra, lines: [], rates: {}, taxable: 0, tax: 0 };
+    var intra = !origin || !pos || origin === pos, o = { pos: pos, intra: intra, lines: [], rates: {}, taxable: 0, tax: 0, cess: 0 };
     /* extra charges on the bill (freight, packing...) are part of the taxable value: counted as lines at their GST rate */
     (d.items || []).concat(window.NSBooks && NSBooks.chargeLines ? NSBooks.chargeLines(d) : []).forEach(function (it) {
+      /* a line read from a sales register (byof-gstr1): the file's own taxable value and tax amounts */
+      if (it._tx) {
+        var x = it._tx, xg = tax ? num(it.gst) : 0, lx = { hsn: String(it.hsn || '').replace(/\s/g, ''), desc: it.desc || '', unit: it.unit || '', qty: num(it.qty), g: xg, txv: r2(x.txv),
+          igst: tax ? r2(x.igst) : 0, cgst: tax ? r2(x.cgst) : 0, sgst: tax ? r2(x.sgst) : 0, cess: tax ? r2(x.cess || 0) : 0 };
+        o.lines.push(lx);
+        var bx = o.rates[xg] || (o.rates[xg] = { g: xg, txv: 0, igst: 0, cgst: 0, sgst: 0, cess: 0 });
+        bx.txv += lx.txv; bx.igst += lx.igst; bx.cgst += lx.cgst; bx.sgst += lx.sgst; bx.cess += lx.cess;
+        o.taxable += lx.txv; o.tax += lx.igst + lx.cgst + lx.sgst; o.cess += lx.cess;
+        return;
+      }
       var q = num(it.qty), rate = num(it.rate);
       if (!it.desc && !rate) return;
       var gross = q * rate, txv = r2(gross - gross * num(it.disc) / 100), g = tax ? num(it.gst) : 0, tx = r2(txv * g / 100);
@@ -64,8 +81,8 @@
       b.txv += l.txv; b.igst += l.igst; b.cgst += l.cgst; b.sgst += l.sgst;
       o.taxable += txv; o.tax += tx;
     });
-    var total = r2(o.taxable + o.tax);
-    o.value = d.round ? Math.round(total) : total;
+    var total = r2(o.taxable + o.tax + o.cess);
+    o.value = d._val || (d.round ? Math.round(total) : total);
     o.taxable = r2(o.taxable); o.tax = r2(o.tax);
     return o;
   }
@@ -88,6 +105,9 @@
 
   /* ---------- the whole period ---------- */
   function period() {
+    /* every month of a dropped file at once (byof-gstr1): the yearly HSN view, totals month by month */
+    if ($('#g1-ptype').value === 'a' && FILE && FILE.from) { var fm = FILE.from.slice(0, 7), tm = FILE.to.slice(0, 7);
+      return { from: FILE.from.slice(0, 7) + '-01', to: FILE.to, a: true, many: fm !== tm, label: fm === tm ? MON[+fm.slice(5) - 1] + ' ' + fm.slice(0, 4) : MON[+fm.slice(5) - 1] + ' ' + fm.slice(0, 4) + '–' + MON[+tm.slice(5) - 1] + ' ' + tm.slice(0, 4) }; }
     var m = $('#g1-month').value || NS.today().slice(0, 7), q = $('#g1-ptype').value === 'q';
     var y = +m.slice(0, 4), mo = +m.slice(5, 7), from = mo, to = mo;
     if (q) { from = Math.floor((mo - 1) / 3) * 3 + 1; to = from + 2; }
@@ -95,6 +115,7 @@
     var last = new Date(y, to, 0).getDate();
     return { from: y + '-' + pad(from) + '-01', to: y + '-' + pad(to) + '-' + pad(last), q: q, label: q ? MON[from - 1] + '–' + MON[to - 1] + ' ' + y : MON[mo - 1] + ' ' + y };
   }
+  function cs(b) { return b.cess ? r2(b.cess) : ''; }
   function addTo(map, k, base) { return map[k] || (map[k] = Object.assign({ txv: 0, igst: 0, cgst: 0, sgst: 0 }, base)); }
   function work() {
     var bz = $('#g1-biz').value, P = period(), aato = $('#g1-aato').value;
@@ -106,12 +127,14 @@
     /* one record per bill or note for the portal JSON (gstr1json.js) */
     function J(s, d, o, x) { r.J[s].push(Object.assign({ no: d.no, date: d.date, val: o.value, pos: o.pos, rc: !!d.rc, rates: Object.keys(o.rates).map(function (g) { return o.rates[g]; }) }, x)); }
     var W = function (k, v) { r.warn.push(t('g1.w.' + k, v)); };
+    r.mon = {};
+    function mon(dt, list, sign) { var x = r.mon[dt.slice(0, 7)] || (r.mon[dt.slice(0, 7)] = { m: dt.slice(0, 7), n: 0, txv: 0, igst: 0, cgst: 0, sgst: 0 }); x.n++; list.forEach(function (b) { x.txv += sign * b.txv; x.igst += sign * b.igst; x.cgst += sign * b.cgst; x.sgst += sign * b.sgst; }); }
     function tot(o, sign) { r.tot.txv += sign * o.txv; r.tot.igst += sign * o.igst; r.tot.cgst += sign * o.cgst; r.tot.sgst += sign * o.sgst; }
     function hsn(bucket, d, o, sign) {
       o.lines.forEach(function (l) {
-        var svc = /^99/.test(l.hsn), u = svc ? '' : UQC[key(l.unit)] || 'OTH-OTHERS';
+        var svc = /^99/.test(l.hsn), u = svc ? '' : uqcOf(l.unit);
         var h = addTo(bucket, l.hsn + '|' + l.g + '|' + u, { hsn: l.hsn, desc: l.desc, uqc: u, qty: 0, g: l.g, svc: svc });
-        h.qty += sign * (svc ? 0 : l.qty); h.txv += sign * l.txv; h.igst += sign * l.igst; h.cgst += sign * l.cgst; h.sgst += sign * l.sgst;
+        h.qty += sign * (svc ? 0 : l.qty); h.txv += sign * l.txv; h.igst += sign * l.igst; h.cgst += sign * l.cgst; h.sgst += sign * l.sgst; h.cess = (h.cess || 0) + sign * (l.cess || 0);
         if (!l.hsn) W('nohsn', { no: d.no, item: l.desc });
         else if (!/^\d+$/.test(l.hsn) || [4, 6, 8].indexOf(l.hsn.length) < 0) W('badhsn', { no: d.no, h: l.hsn });
         else if (aato === 'big' && l.hsn.length < 6) W('hsn6', { no: d.no, h: l.hsn });
@@ -140,28 +163,28 @@
         if (d.irn) W('irn', { no: d.no });
         if (d.buyer && d.buyer.gstin && !reg) W('badgstin', { no: d.no, g: d.buyer.gstin });
         var c = cls(d), rc = d.rc ? 'Y' : 'N', rates = Object.keys(o.rates).map(function (g) { return o.rates[g]; });
-        rates.forEach(function (b) { tot(b, 1); });
+        rates.forEach(function (b) { tot(b, 1); }); mon(d.date, rates, 1);
         if (d.date >= '2026-02-01' && rates.some(function (b) { return +b.g === 28; })) W('r28', { no: d.no });
         if (d.date >= '2025-09-22' && (d.items || []).some(function (it) { return +it.gst === 12 && !/^99/.test(String(it.hsn || '').trim()); })) W('r12', { no: d.no });   /* goods left 12% on 22 Sep 2025 (F3-4) */   /* 28% left the GST rate list on 1 Feb 2026 (same rule as docs.js RATE_SETS) */
         if (c === 'b2b') {
           var st = SUPTYPE[supOf(d)] || 'Regular B2B';
-          rates.forEach(function (b) { r.b2b.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), o.value, posTxt(o.pos), rc, '', st, '', b.g, r2(b.txv), '', b]); });
+          rates.forEach(function (b) { r.b2b.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), o.value, posTxt(o.pos), rc, '', st, '', b.g, r2(b.txv), cs(b), b]); });
           J('b2b', d, o, { ctin: d.buyer.gstin.toUpperCase().trim(), sup: supOf(d) });
           hsn(r.hsnb2b, d, o, 1);
         } else if (c === 'b2cl') {
-          rates.forEach(function (b) { r.b2cl.push([d.no, gdate(d.date), o.value, posTxt(o.pos), '', b.g, r2(b.txv), '', '', b]); });
+          rates.forEach(function (b) { r.b2cl.push([d.no, gdate(d.date), o.value, posTxt(o.pos), '', b.g, r2(b.txv), cs(b), '', b]); });
           J('b2cl', d, o);
           hsn(r.hsnb2c, d, o, 1);
         } else if (c === 'exp') {
           var et = exportOf(d), ex = d.exp || {};
-          rates.forEach(function (b) { r.exp.push([et, d.no, gdate(d.date), o.value, ex.port || '', ex.sbNo || '', gdate(ex.sbDate), b.g, r2(b.txv), '', b]); });
+          rates.forEach(function (b) { r.exp.push([et, d.no, gdate(d.date), o.value, ex.port || '', ex.sbNo || '', gdate(ex.sbDate), b.g, r2(b.txv), cs(b), b]); });
           J('exp', d, o, { etype: et, port: String(ex.port || '').toUpperCase(), sbno: /^\d{1,7}$/.test(ex.sbNo || '') ? +ex.sbNo : '', sbdate: ex.sbDate || '' });
           if (!ex.port || !ex.sbNo || !ex.sbDate) W('exp', { no: d.no });   /* only when the port code, shipping bill no. or date is missing (F3-2) */
           hsn(r.hsnb2c, d, o, 1);
         } else {
           rates.forEach(function (b) {
             if (!b.g) { var zb = z8(d, 'nil'); if (zb && r2(zb[0] + zb[1] + zb[2]) === r2(b.txv)) zb.forEach(function (v, c) { r.exemp[place][c] += v; }); else r.exemp[place][0] += b.txv; return; }
-            var s = addTo(r.b2cs, o.pos + '|' + b.g, { pos: o.pos, g: b.g }); s.txv += b.txv; s.igst += b.igst; s.cgst += b.cgst; s.sgst += b.sgst;
+            var s = addTo(r.b2cs, o.pos + '|' + b.g, { pos: o.pos, g: b.g }); s.txv += b.txv; s.igst += b.igst; s.cgst += b.cgst; s.sgst += b.sgst; s.cess = (s.cess || 0) + (b.cess || 0);
           });
           hsn(r.hsnb2c, d, o, 1);
         }
@@ -172,23 +195,23 @@
         r.n++;
         var on = calc(d), sign = d.kind === 'debit' ? 1 : -1, orig = byNo[key(d.orig && d.orig.no)], nt = d.kind === 'debit' ? 'D' : 'C';
         var pos = orig ? calc(orig).pos : on.pos, nrates = Object.keys(on.rates).map(function (g) { return on.rates[g]; });
-        nrates.forEach(function (b) { tot(b, sign); });
+        nrates.forEach(function (b) { tot(b, sign); }); mon(d.date, nrates, sign);
         if (!orig) W('noorig', { no: d.no, o: d.orig && d.orig.no || '—' });
         else if (orig.date && d.date && d.date < orig.date) W('nbefore', { no: d.no, o: orig.no });   /* a note cannot come before its bill (F3-3) */
         if (gstinOk(d.buyer && d.buyer.gstin)) {
           var nst = SUPTYPE[orig && supOf(orig)] || 'Regular B2B';
-          nrates.forEach(function (b) { r.cdnr.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), nt, posTxt(pos), d.rc ? 'Y' : 'N', nst, on.value, '', b.g, r2(b.txv), '', b]); });
+          nrates.forEach(function (b) { r.cdnr.push([d.buyer.gstin.toUpperCase(), d.buyer.name || '', d.no, gdate(d.date), nt, posTxt(pos), d.rc ? 'Y' : 'N', nst, on.value, '', b.g, r2(b.txv), cs(b), b]); });
           J('cdnr', d, on, { ctin: d.buyer.gstin.toUpperCase().trim(), pos: pos, ntty: nt, sup: orig && orig.einv && orig.einv.sup });
           hsn(r.hsnb2b, d, on, sign);
         } else {
           var oc = orig ? cls(orig) : '';
           if (oc === 'b2cl' || oc === 'exp') {
             var ur = oc === 'b2cl' ? 'B2CL' : exportOf(orig) === 'WPAY' ? 'EXPWP' : 'EXPWOP';
-            nrates.forEach(function (b) { r.cdnur.push([ur, d.no, gdate(d.date), nt, oc === 'b2cl' ? posTxt(pos) : '', on.value, '', b.g, r2(b.txv), '', b]); });
+            nrates.forEach(function (b) { r.cdnur.push([ur, d.no, gdate(d.date), nt, oc === 'b2cl' ? posTxt(pos) : '', on.value, '', b.g, r2(b.txv), cs(b), b]); });
             J('cdnur', d, on, { ur: ur, pos: pos, ntty: nt });
           } else {   /* small B2C bills: the note changes the B2CS figures (a credit note lowers them) */
             nrates.forEach(function (b) {
-              var s = addTo(r.b2cs, pos + '|' + b.g, { pos: pos, g: b.g }); s.txv += sign * b.txv; s.igst += sign * b.igst; s.cgst += sign * b.cgst; s.sgst += sign * b.sgst;
+              var s = addTo(r.b2cs, pos + '|' + b.g, { pos: pos, g: b.g }); s.txv += sign * b.txv; s.igst += sign * b.igst; s.cgst += sign * b.cgst; s.sgst += sign * b.sgst; s.cess = (s.cess || 0) + sign * (b.cess || 0);
             });
           }
           hsn(r.hsnb2c, d, on, sign);
@@ -213,9 +236,10 @@
     if (r.skipped) W('plain', { n: r.skipped });
     ['b2cs', 'at', 'atadj', 'hsnb2b', 'hsnb2c'].forEach(function (s) { r[s] = Object.keys(r[s]).map(function (k) { return r[s][k]; }); });
     r.b2cs.forEach(function (s) { tot0(s); }); r.at.forEach(function (s) { tot0(s); }); r.atadj.forEach(function (s) { tot0(s); });
-    function tot0(s) { s.txv = r2(s.txv); s.igst = r2(s.igst); s.cgst = r2(s.cgst); s.sgst = r2(s.sgst); }
+    function tot0(s) { s.txv = r2(s.txv); s.igst = r2(s.igst); s.cgst = r2(s.cgst); s.sgst = r2(s.sgst); if (s.cess) s.cess = r2(s.cess); }
     r.hsnb2b.forEach(tot0); r.hsnb2c.forEach(tot0);
     r.docs = Object.keys(r.docs).map(function (k) { return docSum(r.docs[k], W); });
+    r.mon = Object.keys(r.mon).sort().map(function (k) { tot0(r.mon[k]); return r.mon[k]; });
     Object.keys(r.tot).forEach(function (k) { r.tot[k] = r2(r.tot[k]); });
     var uniq = {}; r.warn = r.warn.filter(function (w) { if (uniq[w]) return false; uniq[w] = 1; return true; });
     return r;
@@ -240,15 +264,15 @@
       case 'b2b': return r.b2b.map(cut);
       case 'b2cl': return r.b2cl.map(cut);
       case 'exp': return r.exp.map(cut);
-      case 'b2cs': return r.b2cs.map(function (x) { return excel ? ['OE', posTxt(x.pos), '', x.g, x.txv, '', ''] : ['OE', posTxt(x.pos), x.g, '', x.txv, '', '']; });
+      case 'b2cs': return r.b2cs.map(function (x) { return excel ? ['OE', posTxt(x.pos), '', x.g, x.txv, cs(x), ''] : ['OE', posTxt(x.pos), x.g, '', x.txv, cs(x), '']; });
       case 'exemp': return EXEMP.map(function (n, i) { return [n, r2(r.exemp[i][0]), r2(r.exemp[i][1]), r2(r.exemp[i][2])]; });
       case 'cdnr': return r.cdnr.map(cut);
       case 'cdnur': return r.cdnur.map(cut);
       case 'at': return r.at.map(function (x) { return [posTxt(x.pos), '', x.g, x.txv, '']; });
       case 'atadj': return r.atadj.map(function (x) { return [posTxt(x.pos), '', x.g, x.txv, '']; });
       case 'hsnb2b': case 'hsnb2c': return r[s].map(function (h) {
-        var tv = r2(h.txv + h.igst + h.cgst + h.sgst), q = h.svc ? '' : r2(h.qty);
-        return excel ? [h.hsn, h.desc, h.uqc, q, tv, h.g, h.txv, h.igst, h.cgst, h.sgst, ''] : [h.hsn, h.desc, h.uqc, q, tv, h.txv, h.igst, h.cgst, h.sgst, '', h.g];
+        var tv = r2(h.txv + h.igst + h.cgst + h.sgst + (h.cess || 0)), q = h.svc ? '' : r2(h.qty);
+        return excel ? [h.hsn, h.desc, h.uqc, q, tv, h.g, h.txv, h.igst, h.cgst, h.sgst, cs(h)] : [h.hsn, h.desc, h.uqc, q, tv, h.txv, h.igst, h.cgst, h.sgst, cs(h), h.g];
       });
       case 'docs': return r.docs.map(function (x) { return [x.nature, x.from, x.to, x.total, x.cancel]; });
     }
@@ -302,7 +326,7 @@
   }
   function showTpl() { var e = $('[data-tpl="gstr1"]'); if (e && NS.xlFill) NS.xlFill.info('gstr1').then(function (k) { e.textContent = k ? ' Using ' + k.name : ''; }); }
   function fillTpl(own) {
-    if (!R || !NS.xlFill) return;
+    if (!R || !NS.xlFill || !oneReturn()) return;
     var g = ownGstin();
     var tp = null;
     NS.xlFill.template('gstr1', own).then(function (x) {
@@ -323,7 +347,10 @@
     var s = R.seller || {}, bz = $('#g1-biz').value, b = BIZ.filter(function (x) { return key(x.name) === bz && x.gstin; })[0];
     return String(s.gstin || b && b.gstin || '').trim().toUpperCase();
   }
+  function gate() { return !window.NSG1 || !NSG1.gate || NSG1.gate(); }   /* g1drop.js: rows still to correct in a dropped file */
+  function oneReturn() { if (R && R.P.many) { NS.toast(t('g1f.onemonth'), 'bad'); return false; } return gate(); }
   function json() {
+    if (!oneReturn()) return;
     var box = $('#g1-jerr'), g = ownGstin(), E = NSG1J.validate(R, g, $('#g1-aato').value);
     if (E.length) {
       box.hidden = false;
@@ -377,6 +404,8 @@
       '<div><span>IGST</span><b>' + m(r.tot.igst) + '</b></div><div><span>CGST</span><b>' + m(r.tot.cgst) + '</b></div><div><span>SGST/UTGST</span><b>' + m(r.tot.sgst) + '</b></div><div><span>' + esc(t('g1.k.tax')) + '</span><b>' + m(tax) + '</b></div></div>' +
       (r.warn.length ? '<div class="callout g1-warn"><b>' + esc(t('g1.check')) + '</b><ul>' + r.warn.slice(0, 40).map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>' + (r.warn.length > 40 ? '<p>' + esc(t('g1.more', { n: r.warn.length - 40 })) + '</p>' : '') + '</div>' : '') +
       (!r.n ? '<p class="callout">' + esc(t('g1.empty')) + '</p>' : '');
+    if (r.P.a && r.mon.length > 1) h += '<section class="g1-sec"><div class="g1-sh"><h3>' + esc(t('g1f.bymonth')) + '</h3></div><div class="g1-tw"><table class="g1-t"><thead><tr><th>' + esc(t('g1.month')) + '</th><th class="n">' + esc(t('g1.k.n')) + '</th>' + TH().map(function (x) { return '<th class="n">' + esc(x) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      r.mon.map(function (x) { return '<tr><td>' + esc(MON[+x.m.slice(5) - 1] + ' ' + x.m.slice(0, 4)) + '</td><td class="n">' + x.n + '</td>' + taxCols(x).map(function (v) { return '<td class="n">' + m(v) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div></section>';
     var inv = [t('g1.c.no'), t('g1.c.date'), t('g1.c.val'), t('g1.c.pos'), t('g1.c.rate')].concat(TH());
     h += table('b2b', ['GSTIN', t('g1.c.name')].concat(inv), r.b2b.map(function (x) { return [x[0], x[1], x[2], x[3], x[4], x[5], x[10] + '%'].concat(taxCols(last(x))); }), feet(r.b2b, last));
     h += table('b2cl', inv, r.b2cl.map(function (x) { return [x[0], x[1], x[2], x[3], x[5] + '%'].concat(taxCols(last(x))); }), feet(r.b2cl, last));
@@ -396,7 +425,7 @@
     var off = $('#g1-off'); if (off) off.innerHTML = official(r);
     var je = $('#g1-jerr'); if (je) je.hidden = true;
     $('#g1-files').hidden = false;
-    try { localStorage.setItem('ns-g1', JSON.stringify({ biz: $('#g1-biz').value, p: $('#g1-ptype').value, m: $('#g1-month').value, a: $('#g1-aato').value })); } catch (e) {}
+    if (!FILE) try { localStorage.setItem('ns-g1', JSON.stringify({ biz: $('#g1-biz').value, p: $('#g1-ptype').value, m: $('#g1-month').value, a: $('#g1-aato').value })); } catch (e) {}
   }
 
   /* the return as Form GSTR-1 lays it out (rule 59(1) of the CGST Rules): tables 4 to 13 under their own numbers */
@@ -446,9 +475,28 @@
     BIZ.concat(DOCS.map(function (d) { return d.seller; })).forEach(function (s) { var k = key(s && s.name); if (k && !seen[k]) { seen[k] = 1; out.push([k, s.name + (s.gstin ? ' (' + s.gstin + ')' : '')]); } });
     return out;
   }
+  /* bills from a dropped file (byof-gstr1): shown instead of the saved bills until "Use my saved bills" */
+  function useFile(f) {
+    FILE = f; DOCS = f.docs; BIZ = [f.seller];
+    var sel = $('#g1-biz'), k = key(f.seller.name);
+    sel.innerHTML = '<option value="' + esc(k) + '">' + esc(f.seller.name + (f.seller.gstin ? ' (' + f.seller.gstin + ')' : '')) + '</option>'; sel.value = k;
+    var pt = $('#g1-ptype'); if (!$('option[value="a"]', pt)) { var op = NS.el('option', { value: 'a', 'data-i18n': 'g1f.pa' }); op.textContent = t('g1f.pa'); pt.appendChild(op); }
+    var ms = f.months || []; pt.value = ms.length > 1 ? 'a' : 'm'; if (ms.length) $('#g1-month').value = ms[ms.length - 1];
+    $('#g1-status').textContent = t('g1f.using', { f: f.name, n: f.docs.length });
+    root.classList.add('on', 'g1-file');
+    draw();
+  }
+  function useSaved() {
+    FILE = null; root.classList.remove('g1-file');
+    var op = $('#g1-ptype option[value="a"]'); if (op) { if ($('#g1-ptype').value === 'a') $('#g1-ptype').value = 'm'; op.remove(); }
+    load();
+  }
+  window.NSG1 = { useFile: useFile, useSaved: useSaved, result: function () { return R; }, file: function () { return FILE; }, draw: function () { if (R) draw(); } };
   function load() {
+    if (FILE) return useFile(FILE);
     var st = $('#g1-status');
     NSStore.ready().then(function () { return Promise.all([NSStore.list('doc'), NSStore.list('biz')]); }).then(function (x) {
+      if (FILE) return;   /* a file was dropped meanwhile */
       DOCS = (x[0] || []).map(function (d) { return window.NSBooks && NSBooks.asInvoice ? NSBooks.asInvoice(d) : d; });   /* export invoices (F3-10) */ BIZ = x[1] || [];
       var bl = bizList(), sel = $('#g1-biz');
       sel.innerHTML = bl.length ? bl.map(function (b) { return '<option value="' + esc(b[0]) + '">' + esc(b[1]) + '</option>'; }).join('') : '<option value="">' + esc(t('g1.nobiz')) + '</option>';
@@ -473,13 +521,13 @@
       var b = e.target.closest('button'); if (!b || !R) return;
       if (b.dataset.csv) csv(b.dataset.csv);
       else if (b.dataset.do === 'json') json();
-      else if (b.dataset.do === 'xlsx') excel();
+      else if (b.dataset.do === 'xlsx') { if (gate()) excel(); }
       else if (b.dataset.do === 'tpl') fillTpl(false);
       else if (b.dataset.do === 'tplown') fillTpl(true);
-      else if (b.dataset.do === 'allcsv') SEC.forEach(function (s, i) { if (rows(s, R).length) setTimeout(function () { csv(s); }, i * 400); });
+      else if (b.dataset.do === 'allcsv' && gate()) SEC.forEach(function (s, i) { if (rows(s, R).length) setTimeout(function () { csv(s); }, i * 400); });
       else if (b.dataset.do === 'print') window.print();
       else if (b.dataset.do === 'share') NS.sharePdf([NS.gstForm && NS.gstForm.inApp && $('#g1-off .off-sheet') || $('#g1-out')], fname(''), 'a4', 'GSTR-1 ' + R.P.label, 'GSTR-1 summary ' + R.P.label);
-      else if (b.dataset.do === 'refresh') load();
+      else if (b.dataset.do === 'refresh') { if (FILE) useSaved(); else load(); }
     });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();

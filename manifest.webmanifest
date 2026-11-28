@@ -2,7 +2,7 @@
  "id": "/",
  "name": "Nivesh Sahayak GSTR-1",
  "short_name": "NS GSTR-1",
- "description": "Free GSTR-1 summary from your saved bills",
+ "description": "Free GSTR-1 from your Tally, Busy or Excel sales register, or your saved bills",
  "start_url": "/",
  "scope": "/",
  "display": "standalone",
